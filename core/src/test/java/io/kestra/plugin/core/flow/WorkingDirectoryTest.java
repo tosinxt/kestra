@@ -410,7 +410,7 @@ public class WorkingDirectoryTest {
             var subExecutions = executionRepository.findLoopSubExecutions(execution.getTenantId(), execution.getId(), null);
             assertThat(subExecutions.size()).isEqualTo(1);
             assertThat(((String) taskOutputService.getOutputs(subExecutions.getFirst().findTaskRunsByTaskId("log-workerparent").getFirst()).get("value")))
-                .contains("{\"task\":{\"id\":\"workingDir\"}}");
+                .contains("{\"task\":{\"id\":\"seq\"}}");
         }
 
         public void namespaceFiles(TestRunnerUtils runnerUtils) throws TimeoutException, IOException, QueueException, URISyntaxException, io.kestra.core.exceptions.InternalException {
