@@ -732,26 +732,8 @@ public class WorkerJobDispatcher {
         WorkerJobEvent event = either.getLeft();
         WorkerJob job = event.job();
 
-        // Pre-dispatch killed check: if the execution is already killed, produce a KILLED result directly
-        if (job instanceof WorkerTask workerTask) {
-            String executionId = workerTask.getTaskRun().getExecutionId();
-            if (
-                !Boolean.TRUE.equals(workerTask.getTaskRun().getForceExecution())
-                    && killedExecutionIds.getIfPresent(executionId) != null
-            ) {
-                log.info("Skipping dispatch of task '{}' for killed execution '{}'", job.uid(), executionId);
-                metricRegistry.counter(
-                    MetricRegistry.METRIC_CONTROLLER_JOB_KILLED_TOTAL,
-                    MetricRegistry.METRIC_CONTROLLER_JOB_KILLED_TOTAL_DESCRIPTION,
-                    metricRegistry.workerQueueTags(workerQueueId)
-                ).increment();
-                try {
-                    workerTaskResultQueue.emit(new WorkerTaskResult(workerTask.getTaskRun().withState(State.Type.KILLED)));
-                } catch (QueueException e) {
-                    log.error("Failed to emit KILLED result for task '{}': {}", job.uid(), e.getMessage(), e);
-                }
-                return;
-            }
+        if (skipIfKilled(job, workerQueueId)) {
+            return;
         }
 
         WorkerQueueState state = workerQueueStates.get(workerQueueId);
@@ -788,6 +770,68 @@ public class WorkerJobDispatcher {
         } finally {
             state.lock.unlock();
         }
+    }
+
+    /**
+     * Dispatches a sticky job to its worker, bypassing the Worker Queue's load balancing.
+     * <p>
+     * A job for a connected worker with no free permit is re-queued on the same vNode.
+     *
+     * @return {@code false} when the target worker is not connected to this controller, so the caller must forward it.
+     */
+    public boolean dispatchSticky(WorkerJobEvent event) {
+        String workerQueueId = event.workerQueueId() == null ? "" : event.workerQueueId();
+        WorkerJob job = event.job();
+        if (skipIfKilled(job, workerQueueId)) {
+            return true;
+        }
+
+        WorkerStreamContext<WorkerJobResponse> context = activeStreams.get(event.stickyRouting().workerId());
+        if (context == null) {
+            return false;
+        }
+
+        if (!context.tryConsumePermit()) {
+            requeue(event);
+            return true;
+        }
+        String bucket = context.tryReserveBucket(workerQueueId);
+        if (bucket == null) {
+            context.addPermits(1);
+            requeue(event);
+            return true;
+        }
+        dispatchJobToWorker(context, job, event, workerQueueId, bucket);
+        return true;
+    }
+
+    /**
+     * Pre-dispatch killed check: if the execution is already killed, produce a KILLED result directly.
+     */
+    private boolean skipIfKilled(WorkerJob job, String workerQueueId) {
+        if (!(job instanceof WorkerTask workerTask)) {
+            return false;
+        }
+        String executionId = workerTask.getTaskRun().getExecutionId();
+        if (
+            Boolean.TRUE.equals(workerTask.getTaskRun().getForceExecution())
+                || killedExecutionIds.getIfPresent(executionId) == null
+        ) {
+            return false;
+        }
+
+        log.info("Skipping dispatch of task '{}' for killed execution '{}'", job.uid(), executionId);
+        metricRegistry.counter(
+            MetricRegistry.METRIC_CONTROLLER_JOB_KILLED_TOTAL,
+            MetricRegistry.METRIC_CONTROLLER_JOB_KILLED_TOTAL_DESCRIPTION,
+            metricRegistry.workerQueueTags(workerQueueId)
+        ).increment();
+        try {
+            workerTaskResultQueue.emit(new WorkerTaskResult(workerTask.getTaskRun().withState(State.Type.KILLED)));
+        } catch (QueueException e) {
+            log.error("Failed to emit KILLED result for task '{}': {}", job.uid(), e.getMessage(), e);
+        }
+        return true;
     }
 
     private void handleDeserializationError(DeserializationException deserializationException) {

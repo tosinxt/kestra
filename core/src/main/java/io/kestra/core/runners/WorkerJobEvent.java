@@ -19,13 +19,19 @@ import jakarta.annotation.Nullable;
  *
  * @param workerQueueId The Worker Queue id for routing. Null/empty for the default queue.
  * @param job The actual worker job payload.
+ * @param stickyRouting The routing to the one worker that must run the job, or {@code null} for any worker of the Worker Queue.
  */
 public record WorkerJobEvent(
     String workerQueueId,
-    WorkerJob job) implements KeyedDispatchEvent, HasUID {
+    WorkerJob job,
+    @Nullable StickyRouting stickyRouting) implements KeyedDispatchEvent, HasUID {
 
     public WorkerJobEvent {
         workerQueueId = normalizeWorkerQueue(workerQueueId);
+    }
+
+    public WorkerJobEvent(String workerQueueId, WorkerJob job) {
+        this(workerQueueId, job, null);
     }
 
     public static WorkerJobEvent of(WorkerTask workerTask, @Nullable String workerQueueId) {
@@ -41,12 +47,19 @@ public record WorkerJobEvent(
     }
 
     /**
-     * Returns the routing key for the keyed dispatch queue: the Worker Queue id, or
-     * empty string for the default queue.
+     * Returns the routing key for the keyed dispatch queue: the vNode routing key of a sticky job,
+     * otherwise the Worker Queue id, or empty string for the default queue.
      */
     @Override
     public String key() {
+        if (stickyRouting != null) {
+            return stickyRouting.vNodeRoutingKey();
+        }
         return workerQueueId != null ? workerQueueId : "";
+    }
+
+    public WorkerJobEvent withStickyRouting(StickyRouting stickyRouting) {
+        return new WorkerJobEvent(workerQueueId, job, stickyRouting);
     }
 
     /**
@@ -65,5 +78,18 @@ public record WorkerJobEvent(
             return null;
         }
         return workerQueueId;
+    }
+
+    /**
+     * Routes a job to one worker through a vNode of the controller holding it.
+     *
+     * @param workerId The worker that must run the job.
+     * @param vNodeRoutingKey The routing key of a vNode owned by the controller holding the worker.
+     */
+    public record StickyRouting(String workerId, String vNodeRoutingKey) {
+
+        public StickyRouting withVNodeRoutingKey(String vNodeRoutingKey) {
+            return new StickyRouting(workerId, vNodeRoutingKey);
+        }
     }
 }
