@@ -36,6 +36,12 @@ public class WorkerTask extends WorkerJob {
     private ExecutionKind executionKind;
 
     /**
+     * The id of the task run of the enclosing WorkingDirectory, whose folder this task runs in.
+     */
+    @Nullable
+    private String workingDirectoryId;
+
+    /**
      * {@inheritDoc}
      */
     @Override

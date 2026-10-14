@@ -26,6 +26,16 @@ public class WorkingDirFactory {
         return new LocalWorkingDir(getTmpDir());
     }
 
+    /**
+     * Creates the {@link WorkingDir} shared by all the tasks of a WorkingDirectory on this worker.
+     *
+     * @param workingDirectoryId The id of the task run of the WorkingDirectory.
+     * @return The {@link WorkingDir}, always the same folder for the same id.
+     */
+    public WorkingDir createWorkingDirectory(String workingDirectoryId) {
+        return new LocalWorkingDir(getTmpDir(), "working-directory-" + workingDirectoryId);
+    }
+
     private Path getTmpDir() {
         return Optional.ofNullable(tasksConfiguration.tmpDir())
             .map(TasksConfiguration.TmpDir::path)

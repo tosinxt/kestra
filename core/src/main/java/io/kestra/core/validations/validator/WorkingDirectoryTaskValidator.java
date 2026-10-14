@@ -1,6 +1,5 @@
 package io.kestra.core.validations.validator;
 
-import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.validations.WorkingDirectoryTaskValidation;
 import io.kestra.plugin.core.flow.WorkingDirectory;
 
@@ -25,13 +24,6 @@ public class WorkingDirectoryTaskValidator implements ConstraintValidator<Workin
         if (value.getTasks() == null || value.getTasks().isEmpty()) {
             context.disableDefaultConstraintViolation();
             context.buildConstraintViolationWithTemplate("The 'tasks' property cannot be empty")
-                .addConstraintViolation();
-            return false;
-        }
-
-        if (value.getTasks().stream().anyMatch(task -> !(task instanceof RunnableTask<?>))) {
-            context.disableDefaultConstraintViolation();
-            context.buildConstraintViolationWithTemplate("Only runnable tasks are allowed as children of a WorkingDirectory task")
                 .addConstraintViolation();
             return false;
         }

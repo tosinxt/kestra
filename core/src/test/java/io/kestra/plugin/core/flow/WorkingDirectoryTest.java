@@ -30,6 +30,7 @@ import io.kestra.core.models.annotations.PluginProperty;
 import io.kestra.core.models.executions.Execution;
 import io.kestra.core.models.executions.LogEntry;
 import io.kestra.core.models.executions.TaskRun;
+import io.kestra.core.models.executions.TaskRunAttempt;
 import io.kestra.core.models.flows.Flow;
 import io.kestra.core.models.flows.State;
 import io.kestra.core.models.property.Property;
@@ -124,52 +125,18 @@ public class WorkingDirectoryTest {
     }
 
     @Test
-    void shouldNotResolveTerminalStateWhenASubtaskIsStillRunning() throws Exception {
-        // Given a WorkingDirectory whose subtasks run inside the Worker and report through independent
-        // queue messages: t4 has already failed but t3's terminal (SUCCESS) result hasn't been joined yet
+    void shouldNotStartAnyTaskUntilAWorkerHasOpenedTheFolder() throws Exception {
         WorkingDirectory workingDirectory = fourSubtasksWorkingDirectory();
-        TaskRun parentTaskRun = TaskRun.builder().id("worker-run").taskId("worker").state(new State()).build();
+        TaskRun submitted = TaskRun.builder().id("worker-run").taskId("worker").state(new State()).build();
+        TaskRun opened = submitted.withAttempts(List.of(
+            TaskRunAttempt.builder().workerId("worker-1").state(new State().withState(State.Type.RUNNING)).build()
+        ));
         RunContext runContext = runContextFactory.of(workingDirectory, Map.of());
 
-        Execution execution = Execution.builder()
-            .taskRunList(List.of(
-                parentTaskRun,
-                childTaskRun(parentTaskRun, "t1", State.Type.SUCCESS),
-                childTaskRun(parentTaskRun, "t2", State.Type.SUCCESS),
-                childTaskRun(parentTaskRun, "t3", State.Type.RUNNING),
-                childTaskRun(parentTaskRun, "t4", State.Type.FAILED)
-            ))
-            .build();
-
-        // When resolving the state while t3 is still RUNNING
-        Optional<State.Type> resolvedState = workingDirectory.resolveState(runContext, execution, parentTaskRun);
-
-        // Then it must not terminate yet
-        assertThat(resolvedState).isEmpty();
-    }
-
-    @Test
-    void shouldResolveFailedWhenAllSubtasksHaveTerminatedAndOneFailed() throws Exception {
-        // Given a WorkingDirectory whose subtasks have all reported their terminal result, t4 among them FAILED
-        WorkingDirectory workingDirectory = fourSubtasksWorkingDirectory();
-        TaskRun parentTaskRun = TaskRun.builder().id("worker-run").taskId("worker").state(new State()).build();
-        RunContext runContext = runContextFactory.of(workingDirectory, Map.of());
-
-        Execution execution = Execution.builder()
-            .taskRunList(List.of(
-                parentTaskRun,
-                childTaskRun(parentTaskRun, "t1", State.Type.SUCCESS),
-                childTaskRun(parentTaskRun, "t2", State.Type.SUCCESS),
-                childTaskRun(parentTaskRun, "t3", State.Type.SUCCESS),
-                childTaskRun(parentTaskRun, "t4", State.Type.FAILED)
-            ))
-            .build();
-
-        // When resolving the state now that every subtask has terminated
-        Optional<State.Type> resolvedState = workingDirectory.resolveState(runContext, execution, parentTaskRun);
-
-        // Then the WorkingDirectory resolves to FAILED as t4 failed
-        assertThat(resolvedState).contains(State.Type.FAILED);
+        assertThat(workingDirectory.resolveNexts(runContext, Execution.builder().state(new State().withState(State.Type.RUNNING)).taskRunList(List.of(submitted)).build(), submitted)).isEmpty();
+        assertThat(workingDirectory.resolveNexts(runContext, Execution.builder().state(new State().withState(State.Type.RUNNING)).taskRunList(List.of(opened)).build(), opened))
+            .extracting(next -> next.getTask().getId())
+            .containsExactly("t1");
     }
 
     private static WorkingDirectory fourSubtasksWorkingDirectory() {
@@ -182,15 +149,6 @@ public class WorkingDirectoryTest {
                 Return.builder().id("t3").type(Return.class.getName()).format(Property.ofValue("third")).build(),
                 Return.builder().id("t4").type(Return.class.getName()).format(Property.ofValue("fourth")).build()
             ))
-            .build();
-    }
-
-    private static TaskRun childTaskRun(TaskRun parentTaskRun, String taskId, State.Type state) {
-        return TaskRun.builder()
-            .id(taskId + "-run")
-            .taskId(taskId)
-            .parentTaskRunId(parentTaskRun.getId())
-            .state(new State().withState(state))
             .build();
     }
 
@@ -406,7 +364,7 @@ public class WorkingDirectoryTest {
             var subExecutions = executionRepository.findLoopSubExecutions(execution.getTenantId(), execution.getId(), null);
             assertThat(subExecutions.size()).isEqualTo(1);
             assertThat(((String) taskOutputService.getOutputs(subExecutions.getFirst().findTaskRunsByTaskId("log-workerparent").getFirst()).get("value")))
-                .contains("{\"task\":{\"id\":\"seq\"}}");
+                .contains("{\"task\":{\"id\":\"workingDir\"}}");
         }
 
         public void namespaceFiles(TestRunnerUtils runnerUtils) throws TimeoutException, IOException, QueueException, URISyntaxException, io.kestra.core.exceptions.InternalException {
@@ -493,7 +451,7 @@ public class WorkingDirectoryTest {
                 (f, e) -> ImmutableMap.of("failed", "false"), Duration.ofSeconds(60)
             );
 
-            assertThat(execution.getTaskRunList()).hasSize(2);
+            assertThat(execution.getTaskRunList()).hasSize(3);
             assertThat(execution.getState().getCurrent()).isEqualTo(State.Type.FAILED);
         }
 
