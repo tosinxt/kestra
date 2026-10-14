@@ -1,9 +1,12 @@
 package io.kestra.plugin.core.flow;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.time.Duration;
@@ -15,6 +18,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -42,6 +47,7 @@ import io.kestra.core.queues.DispatchQueueInterface;
 import io.kestra.core.queues.QueueException;
 import io.kestra.core.repositories.ExecutionRepositoryInterface;
 import io.kestra.core.runners.FilesService;
+import io.kestra.core.runners.LocalWorkingDir;
 import io.kestra.core.runners.RunContext;
 import io.kestra.core.runners.RunContextFactory;
 import io.kestra.core.runners.TestRunnerUtils;
@@ -63,6 +69,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @KestraTest(startRunner = true)
 @org.junit.jupiter.api.parallel.Execution(ExecutionMode.SAME_THREAD)
@@ -137,6 +149,40 @@ public class WorkingDirectoryTest {
         assertThat(workingDirectory.resolveNexts(runContext, Execution.builder().state(new State().withState(State.Type.RUNNING)).taskRunList(List.of(opened)).build(), opened))
             .extracting(next -> next.getTask().getId())
             .containsExactly("t1");
+    }
+
+    @Test
+    void shouldNotUploadTheCacheAgainWhenItsFilesDidNotChangeSinceTheOpenJob() throws Exception {
+        // Given a cache holding hello.txt, downloaded by the open job
+        LocalWorkingDir workingDir = new LocalWorkingDir(Files.createTempDirectory("working-directory-cache"), "working-directory-test");
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(archive)) {
+            zip.putNextEntry(new ZipEntry("hello.txt"));
+            zip.write("cached".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        RunContext runContext = mock(RunContext.class, RETURNS_DEEP_STUBS);
+        when(runContext.workingDir()).thenReturn(workingDir);
+        when(runContext.storage().getCacheFile(any(), any(), any())).thenReturn(Optional.of(new ByteArrayInputStream(archive.toByteArray())));
+        when(runContext.render(any(Property.class)).as(Duration.class)).thenReturn(Optional.of(Duration.ofHours(1)));
+        when(runContext.render(any(Property.class)).asList(String.class)).thenReturn(List.of("*.txt"));
+        TaskRun taskRun = TaskRun.builder().id("worker-run").taskId("worker").state(new State()).build();
+
+        // When the open and the close jobs run on distinct instances of the task, as they are deserialized from distinct jobs
+        cachedWorkingDirectory().preExecuteTasks(runContext, taskRun);
+        cachedWorkingDirectory().postExecuteTasks(runContext, taskRun);
+
+        // Then the unchanged files are not uploaded again
+        verify(runContext.storage(), never()).putCacheFile(any(), any(), any());
+    }
+
+    private static WorkingDirectory cachedWorkingDirectory() {
+        return WorkingDirectory.builder()
+            .id("worker")
+            .type(WorkingDirectory.class.getName())
+            .cache(WorkingDirectory.Cache.builder().ttl(Property.ofValue(Duration.ofHours(1))).patterns(Property.ofValue(List.of("*.txt"))).build())
+            .tasks(List.of(Return.builder().id("t1").type(Return.class.getName()).format(Property.ofValue("first")).build()))
+            .build();
     }
 
     private static WorkingDirectory fourSubtasksWorkingDirectory() {

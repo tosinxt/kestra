@@ -225,9 +225,6 @@ public class WorkingDirectory extends Sequential implements NamespaceFilesInterf
 
     private NamespaceFiles namespaceFiles;
 
-    @Getter(AccessLevel.PRIVATE)
-    @Builder.Default
-    private transient long cacheDownloadedTime = 0L;
 
     private Object inputFiles;
 
@@ -295,8 +292,8 @@ public class WorkingDirectory extends Sequential implements NamespaceFilesInterf
                     }
                 }
 
-                // Set the cacheDownloadedTime so that we can check if files has been updated later
-                cacheDownloadedTime = System.currentTimeMillis();
+                // Record when the cache was downloaded so that the close job can check if files have been updated since
+                Files.writeString(cacheDownloadedMarker(runContext), String.valueOf(System.currentTimeMillis()));
             }
         }
 
@@ -330,6 +327,9 @@ public class WorkingDirectory extends Sequential implements NamespaceFilesInterf
             return;
         }
         try {
+            Path marker = cacheDownloadedMarker(runContext);
+            long cacheDownloadedTime = Files.exists(marker) ? Long.parseLong(Files.readString(marker).trim()) : 0L;
+
             // This is monolithic, maybe a cache entry by pattern would be better.
             List<Path> matchesList = runContext.workingDir().findAllFilesMatching(runContext.render(cache.getPatterns()).asList(String.class));
 
@@ -378,6 +378,23 @@ public class WorkingDirectory extends Sequential implements NamespaceFilesInterf
         } catch (IOException e) {
             runContext.logger().error("Unable to execute WorkingDirectory post actions", e);
         }
+    }
+
+    /**
+     * Deletes the folder of this WorkingDirectory on the worker, with what this task keeps next to it.
+     */
+    public void cleanup(RunContext runContext) throws IOException {
+        Files.deleteIfExists(cacheDownloadedMarker(runContext));
+        runContext.workingDir().cleanup();
+    }
+
+    /**
+     * The open and close jobs of a WorkingDirectory run on distinct task instances, so the time the cache was
+     * downloaded is kept in a file next to the folder, where neither the cache patterns nor the output files match it.
+     */
+    private static Path cacheDownloadedMarker(RunContext runContext) {
+        Path folder = runContext.workingDir().path();
+        return folder.resolveSibling(folder.getFileName() + ".cache-downloaded-at");
     }
 
     @Override

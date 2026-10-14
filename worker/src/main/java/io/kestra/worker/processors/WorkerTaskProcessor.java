@@ -132,12 +132,12 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
             .withState(RUNNING);
 
         try {
-            workingDir.cleanup();
+            workingDirectory.cleanup(runContext);
             workingDir.path(true);
             workingDirectory.preExecuteTasks(runContext, taskRun);
         } catch (Exception e) {
             runContext.logger().error("Failed preExecuteTasks on WorkingDirectory: {}", e.getMessage(), e);
-            runContext.cleanup();
+            cleanup(workingDirectory, runContext);
             workerTaskResultQueue.put(new WorkerTaskResult(taskRun.withStateAndAttempt(State.Type.fail(workingDirectory))));
             return;
         }
@@ -158,10 +158,19 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
             runContext.logger().error("Failed postExecuteTasks on WorkingDirectory: {}", e.getMessage(), e);
             taskRun = taskRun.withStateAndAttempt(State.Type.fail(workingDirectory));
         } finally {
-            runContext.cleanup();
+            cleanup(workingDirectory, runContext);
         }
         this.logTerminated(workerTask, taskRun);
         workerTaskResultQueue.put(new WorkerTaskResult(taskRun, outputs));
+    }
+
+    private static void cleanup(WorkingDirectory workingDirectory, DefaultRunContext runContext) {
+        try {
+            workingDirectory.cleanup(runContext);
+        } catch (IOException e) {
+            runContext.logger().warn("Unable to delete the folder of the WorkingDirectory", e);
+        }
+        runContext.cleanup();
     }
 
     private WorkerTaskResult runTask(WorkerTask workerTask, boolean cleanUp) {
