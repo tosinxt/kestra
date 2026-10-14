@@ -105,11 +105,11 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
             if (workerTask.getWorkingDirectoryId() == null) {
                 runTask(workerTask, true);
             } else {
-                WorkingDir workingDir = workingDirFactory.createWorkingDirectory(workerTask.getWorkingDirectoryId());
+                WorkingDir workingDir = workingDirFactory.createWorkingDirectory(workerTask.getTaskRun().getExecutionId(), workerTask.getWorkingDirectoryId());
                 runTask(workerTask, false, runContextInitializer.forWorkingDirectorySubtask(workerTask, workingDir));
             }
         } else if (task instanceof WorkingDirectory workingDirectory) {
-            WorkingDir workingDir = workingDirFactory.createWorkingDirectory(workerTask.getTaskRun().getId());
+            WorkingDir workingDir = workingDirFactory.createWorkingDirectory(workerTask.getTaskRun().getExecutionId(), workerTask.getTaskRun().getId());
             // a close job reaching a worker without the folder comes from a lost worker: the whole WorkingDirectory runs again
             if (workerTask.getTaskRun().getState().isTerminated() && Files.exists(workingDir.path(false))) {
                 closeWorkingDirectory(workerTask, workingDirectory, workingDir);
