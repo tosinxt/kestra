@@ -30,7 +30,6 @@ import io.kestra.core.queues.QueueException;
 import io.kestra.core.runners.*;
 import io.kestra.core.services.ConcurrencyLimitResolver;
 import io.kestra.core.services.QuotaService;
-import io.kestra.core.services.WorkerQueueService;
 import io.kestra.core.trace.Tracer;
 import io.kestra.core.trace.TracerFactory;
 import io.kestra.core.utils.DateUtils;
@@ -62,7 +61,6 @@ public class ExecutionEventMessageHandler implements ExecutorMessageHandler<Exec
     private final ConcurrencyLimitStateStore concurrencyLimitStateStore;
     private final ConcurrencyLimitResolver concurrencyLimitResolver;
     private final ExecutorService executorService;
-    private final WorkerQueueService workerGroupService;
     private final QuotaService quotaService;
     private final FlowMetaStoreInterface flowMetaStore;
     private final KeyedDispatchQueueInterface<WorkerJobEvent> workerJobEventQueue;
@@ -84,7 +82,6 @@ public class ExecutionEventMessageHandler implements ExecutorMessageHandler<Exec
         ConcurrencyLimitStateStore concurrencyLimitStateStore,
         ConcurrencyLimitResolver concurrencyLimitResolver,
         ExecutorService executorService,
-        WorkerQueueService workerGroupService,
         QuotaService quotaService,
         FlowMetaStoreInterface flowMetaStore,
         KeyedDispatchQueueInterface<WorkerJobEvent> workerJobEventQueue,
@@ -106,7 +103,6 @@ public class ExecutionEventMessageHandler implements ExecutorMessageHandler<Exec
         this.concurrencyLimitStateStore = concurrencyLimitStateStore;
         this.concurrencyLimitResolver = concurrencyLimitResolver;
         this.executorService = executorService;
-        this.workerGroupService = workerGroupService;
         this.quotaService = quotaService;
         this.flowMetaStore = flowMetaStore;
         this.workerJobEventQueue = workerJobEventQueue;
@@ -327,7 +323,7 @@ public class ExecutionEventMessageHandler implements ExecutorMessageHandler<Exec
                                             );
                                         } else {
                                             if (workerTask.getTask().isSendToWorkerTask()) {
-                                                Optional<WorkerQueueRouting> routing = workerGroupService.resolveWorkerQueueForJob(flow, workerTask);
+                                                Optional<WorkerQueueRouting> routing = executorService.resolveWorkerQueue(flow, processedExecution, workerTask);
                                                 // Internal dispatch convention: null = default queue. SystemTask routing
                                                 // is enforced upstream in WorkerQueueService.
                                                 String workerQueueId = routing

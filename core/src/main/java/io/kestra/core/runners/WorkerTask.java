@@ -27,6 +27,7 @@ public class WorkerTask extends WorkerJob {
     private TaskRun taskRun;
 
     @NotNull
+    @With
     private Task task;
 
     @NotNull

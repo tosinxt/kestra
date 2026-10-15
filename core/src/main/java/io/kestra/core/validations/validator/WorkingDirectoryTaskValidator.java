@@ -1,5 +1,7 @@
 package io.kestra.core.validations.validator;
 
+import io.kestra.core.models.tasks.FlowableTask;
+import io.kestra.core.models.tasks.Task;
 import io.kestra.core.validations.WorkingDirectoryTaskValidation;
 import io.kestra.plugin.core.flow.WorkingDirectory;
 
@@ -28,7 +30,7 @@ public class WorkingDirectoryTaskValidator implements ConstraintValidator<Workin
             return false;
         }
 
-        if (value.getTasks().stream().anyMatch(task -> task.getWorkerSelector() != null)) {
+        if (value.allChildTasks().stream().anyMatch(WorkingDirectoryTaskValidator::hasWorkerSelector)) {
             context.disableDefaultConstraintViolation();
             context.buildConstraintViolationWithTemplate("Cannot set routing requirements (workerSelector) on WorkingDirectory sub-tasks, only the WorkingDirectory itself can carry them")
                 .addConstraintViolation();
@@ -36,5 +38,10 @@ public class WorkingDirectoryTaskValidator implements ConstraintValidator<Workin
         }
 
         return true;
+    }
+
+    private static boolean hasWorkerSelector(Task task) {
+        return task.getWorkerSelector() != null
+            || task instanceof FlowableTask<?> flowable && flowable.allChildTasks().stream().anyMatch(WorkingDirectoryTaskValidator::hasWorkerSelector);
     }
 }

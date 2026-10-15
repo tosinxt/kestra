@@ -24,6 +24,7 @@ import io.kestra.core.models.assets.AssetUser;
 import io.kestra.core.models.assets.AssetsDeclaration;
 import io.kestra.core.models.assets.AssetsInOut;
 import io.kestra.core.models.executions.*;
+import io.kestra.core.models.flows.Flow;
 import io.kestra.core.models.flows.FlowInterface;
 import io.kestra.core.models.flows.FlowWithSource;
 import io.kestra.core.models.flows.State;
@@ -1043,6 +1044,19 @@ public class ExecutorService {
         }
     }
 
+    /**
+     * Resolves the Worker Queue of a task. The tasks of a WorkingDirectory take the one of their WorkingDirectory, since
+     * they all run on the worker holding its folder.
+     */
+    public Optional<WorkerQueueRouting> resolveWorkerQueue(Flow flow, Execution execution, WorkerTask workerTask) throws NoMatchingWorkerQueueException {
+        WorkerTask routed = Optional.ofNullable(workerTask.getWorkingDirectoryId())
+            .flatMap(execution::findTaskRunByTaskRunIdIfPresent)
+            .map(workingDirectory -> flow.findTaskByTaskIdOrNull(workingDirectory.getTaskId()))
+            .map(workerTask::withTask)
+            .orElse(workerTask);
+        return workerQueueService.resolveWorkerQueueForJob(flow, routed);
+    }
+
     private Optional<TaskRun> enclosingWorkingDirectory(TaskRun taskRun, ExecutorContext executor) {
         Optional<TaskRun> parent = Optional.ofNullable(taskRun.getParentTaskRunId())
             .flatMap(id -> executor.getExecution().findTaskRunByTaskRunIdIfPresent(id));
@@ -1381,7 +1395,7 @@ public class ExecutorService {
                 // Resolve the target Worker Queue for this task
                 Optional<WorkerQueueRouting> routing;
                 try {
-                    routing = workerQueueService.resolveWorkerQueueForJob(executor.getFlow(), workerTask);
+                    routing = resolveWorkerQueue(executor.getFlow(), executor.getExecution(), workerTask);
                 } catch (NoMatchingWorkerQueueException e) {
                     runContext.logger()
                         .error(e.getMessage(), workerTask.getTaskRun().getId(), e);

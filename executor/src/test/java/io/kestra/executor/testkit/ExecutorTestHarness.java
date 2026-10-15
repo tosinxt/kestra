@@ -170,6 +170,7 @@ public final class ExecutorTestHarness {
     private final FlowTriggerService flowTriggerService;
     private final MultipleConditionStateStore multipleConditionStateStore;
     private final ExecutionService executionService;
+    private final WorkerQueueService workerQueueService;
     private final KitRunContextFactory runContextFactory;
     private final Storage storage;
     private final MutableClock clock;
@@ -270,7 +271,8 @@ public final class ExecutorTestHarness {
         this.storage = Mockito.mock(Storage.class);
         this.runContextFactory = new KitRunContextFactory(renderer, runContextLoggerFactory, metricRegistry, taskOutputService, runContextBeanLocator, storage);
         runContextFactoryRef[0] = runContextFactory;
-        WorkerQueueService workerQueueService = new WorkerQueueService.Default();
+        // a spy so tests can route jobs to Worker Queues, which the default service never does
+        this.workerQueueService = Mockito.spy(new WorkerQueueService.Default());
 
         // a spy so tests can stub the methods that reach for other services while the rest stays real
         this.executionService = Mockito.spy(
@@ -346,7 +348,6 @@ public final class ExecutorTestHarness {
             concurrencyLimitStateStore,
             concurrencyLimitResolver,
             executorService,
-            workerQueueService,
             quotaService,
             flowMetaStore,
             workerJobEventQueue,
@@ -865,6 +866,10 @@ public final class ExecutorTestHarness {
 
     public ExecutionService executionService() {
         return executionService;
+    }
+
+    public WorkerQueueService workerQueueService() {
+        return workerQueueService;
     }
 
     /**

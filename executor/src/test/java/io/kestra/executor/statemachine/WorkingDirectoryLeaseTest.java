@@ -3,6 +3,7 @@ package io.kestra.executor.statemachine;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.assertj.core.api.Assertions;
@@ -14,7 +15,11 @@ import io.kestra.core.models.executions.ExecutionKilledExecution;
 import io.kestra.core.models.executions.TaskRunAttempt;
 import io.kestra.core.models.flows.FlowWithSource;
 import io.kestra.core.models.flows.State;
+import io.kestra.core.models.tasks.WorkerQueueFallback;
+import io.kestra.core.models.tasks.WorkerSelector;
 import io.kestra.core.runners.NoTransactionContext;
+import io.kestra.core.runners.WorkerJobEvent;
+import io.kestra.core.runners.WorkerQueueRouting;
 import io.kestra.core.runners.WorkerTask;
 import io.kestra.core.runners.WorkerTaskResult;
 import io.kestra.core.utils.ListUtils;
@@ -27,6 +32,7 @@ import io.kestra.plugin.core.flow.WorkingDirectory;
 
 import static io.kestra.executor.testkit.HarnessAssert.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
@@ -89,6 +95,37 @@ class WorkingDirectoryLeaseTest {
         // Then
         assertThat(harness).hasExecutionInState(created, State.Type.SUCCESS);
         Assertions.assertThat(childTaskRunIds).hasSize(2).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void shouldRouteTheTasksOfAWorkingDirectoryToItsWorkerQueue() throws Exception {
+        // Given: the WorkingDirectory selects the 'gpu' queue, while the flow default queue has no worker
+        doAnswer(invocation -> {
+            WorkerTask job = invocation.getArgument(1);
+            return Optional.of(job.getTask().getWorkerSelector() != null
+                ? new WorkerQueueRouting("gpu", List.of("gpu"), WorkerQueueFallback.FAIL, WorkerQueueRouting.Disposition.DISPATCH)
+                : new WorkerQueueRouting("flow-default", List.of("cpu"), WorkerQueueFallback.FAIL, WorkerQueueRouting.Disposition.FAIL));
+        }).when(harness.workerQueueService()).resolveWorkerQueueForJob(any(), any());
+        FlowWithSource flow = Flows.of(
+            WorkingDirectory.builder()
+                .id("working-directory")
+                .type(WorkingDirectory.class.getName())
+                .workerSelector(new WorkerSelector(List.of("gpu"), WorkerQueueFallback.FAIL))
+                .tasks(List.of(Flows.log("child")))
+                .build()
+        );
+        harness.registerFlow(flow);
+        Execution created = Executions.created(flow);
+
+        // When
+        harness.run(created, WorkingDirectoryLeaseTest::workingDirectoryWorker);
+
+        // Then
+        assertThat(harness).hasExecutionInState(created, State.Type.SUCCESS);
+        Assertions.assertThat(harness.workerJobEventQueue().emittedMessages())
+            .extracting(WorkerJobEvent::workerQueueId)
+            .hasSize(3)
+            .containsOnly("gpu");
     }
 
     @Test
