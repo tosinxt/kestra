@@ -1,5 +1,7 @@
 package io.kestra.core.runners;
 
+import java.time.Instant;
+
 import io.kestra.core.models.HasUID;
 import io.kestra.core.queues.event.KeyedDispatchEvent;
 
@@ -85,11 +87,20 @@ public record WorkerJobEvent(
      *
      * @param workerId The worker that must run the job.
      * @param vNodeRoutingKey The routing key of a vNode owned by the controller holding the worker.
+     * @param workerUnknownSince Since when no controller has held the worker, or {@code null} once one was found.
      */
-    public record StickyRouting(String workerId, String vNodeRoutingKey) {
+    public record StickyRouting(String workerId, String vNodeRoutingKey, @Nullable Instant workerUnknownSince) {
 
-        public StickyRouting withVNodeRoutingKey(String vNodeRoutingKey) {
-            return new StickyRouting(workerId, vNodeRoutingKey);
+        public StickyRouting(String workerId, String vNodeRoutingKey) {
+            this(workerId, vNodeRoutingKey, null);
+        }
+
+        public StickyRouting workerFound(String vNodeRoutingKey) {
+            return new StickyRouting(workerId, vNodeRoutingKey, null);
+        }
+
+        public StickyRouting workerUnknown(Instant now) {
+            return new StickyRouting(workerId, vNodeRoutingKey, workerUnknownSince == null ? now : workerUnknownSince);
         }
     }
 }

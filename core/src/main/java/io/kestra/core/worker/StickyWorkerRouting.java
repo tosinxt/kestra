@@ -1,7 +1,6 @@
 package io.kestra.core.worker;
 
 import java.util.Collection;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 
@@ -60,9 +59,25 @@ public class StickyWorkerRouting {
      * workers sharing it.
      */
     public Optional<String> routingKeyForWorker(String workerId) {
-        return serviceLivenessStore.findAllInstancesInState(Service.ServiceState.RUNNING)
-            .stream()
-            .filter(instance -> instance.is(ServiceType.CONTROLLER))
+        return routingKeyForWorker(serviceLivenessStore.findAllInstancesInState(Service.ServiceState.RUNNING), workerId);
+    }
+
+    /**
+     * Locates a worker with a single read of the liveness store. A worker that left the running states is lost: it
+     * never runs again under the same id, and the liveness coordinator recovers its jobs.
+     */
+    public WorkerLocation locate(String workerId) {
+        List<ServiceInstance> running = serviceLivenessStore.findAllInstancesInStates(Service.ServiceState.allRunningStates());
+        Optional<String> routingKey = routingKeyForWorker(running, workerId);
+        if (routingKey.isPresent()) {
+            return new WorkerLocation.Held(routingKey.get());
+        }
+        return running.stream().anyMatch(instance -> instance.uid().equals(workerId)) ? new WorkerLocation.Unknown() : new WorkerLocation.Lost();
+    }
+
+    private static Optional<String> routingKeyForWorker(List<ServiceInstance> instances, String workerId) {
+        return instances.stream()
+            .filter(instance -> instance.is(ServiceType.CONTROLLER) && instance.is(Service.ServiceState.RUNNING))
             .filter(controller -> prop(controller, WORKERS_PROP).contains(workerId))
             .map(controller -> prop(controller, VNODES_PROP).stream().map(vNode -> ((Number) vNode).intValue()).sorted().toList())
             .filter(vNodes -> !vNodes.isEmpty())
@@ -70,20 +85,22 @@ public class StickyWorkerRouting {
             .map(vNodes -> routingKey(vNodes.get(VNodes.computeVNode(vNodes.size(), workerId))));
     }
 
-    /**
-     * A worker is lost once the liveness coordinator has declared it {@link Service.ServiceState#INACTIVE}, or has
-     * removed it: from then on its jobs are recovered by the coordinator, not delivered.
-     */
-    public boolean isWorkerLost(String workerId) {
-        return serviceLivenessStore.findAllInstancesInStates(EnumSet.complementOf(EnumSet.of(Service.ServiceState.INACTIVE)))
-            .stream()
-            .noneMatch(instance -> instance.uid().equals(workerId));
-    }
-
     private static Collection<?> prop(ServiceInstance controller, String name) {
         if (controller.props() != null && controller.props().get(name) instanceof Collection<?> values) {
             return values;
         }
         return List.of();
+    }
+
+    public sealed interface WorkerLocation {
+
+        record Held(String routingKey) implements WorkerLocation {
+        }
+
+        record Unknown() implements WorkerLocation {
+        }
+
+        record Lost() implements WorkerLocation {
+        }
     }
 }

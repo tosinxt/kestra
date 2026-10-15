@@ -1,7 +1,8 @@
 package io.kestra.controller.grpc.services;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -11,6 +12,7 @@ import io.kestra.core.queues.QueueException;
 import io.kestra.core.queues.QueueSubscriber;
 import io.kestra.core.runners.WorkerJobEvent;
 import io.kestra.core.runners.WorkerJobEvent.StickyRouting;
+import io.kestra.core.server.ServerConfig;
 import io.kestra.core.server.ServiceLivenessStore;
 import io.kestra.core.utils.Disposable;
 import io.kestra.core.utils.Either;
@@ -18,6 +20,7 @@ import io.kestra.core.vnodes.ControllerVNodesAssignmentChannel;
 import io.kestra.core.vnodes.VNodesAssigner;
 import io.kestra.core.vnodes.internals.DefaultVNodesAssigner;
 import io.kestra.core.worker.StickyWorkerRouting;
+import io.kestra.core.worker.StickyWorkerRouting.WorkerLocation;
 
 import io.micronaut.context.annotation.Requires;
 import jakarta.annotation.PreDestroy;
@@ -36,6 +39,7 @@ public class StickyJobVNodeSubscriber implements WorkerLifecycleListener {
 
     private final KeyedDispatchQueueInterface<WorkerJobEvent> workerJobEventQueue;
     private final StickyWorkerRouting routing;
+    private final Duration maxWorkerUnknownDuration;
     private final DefaultVNodesAssigner vNodesAssigner;
     private final Map<Integer, QueueSubscriber<WorkerJobEvent>> subscribers = new ConcurrentHashMap<>();
     private final Map<Integer, BusyWorker> pausedVNodes = new ConcurrentHashMap<>();
@@ -46,9 +50,12 @@ public class StickyJobVNodeSubscriber implements WorkerLifecycleListener {
     @Inject
     public StickyJobVNodeSubscriber(KeyedDispatchQueueInterface<WorkerJobEvent> workerJobEventQueue,
         StickyWorkerRouting routing,
-        ControllerVNodesAssignmentChannel channel) {
+        ControllerVNodesAssignmentChannel channel,
+        ServerConfig serverConfig) {
         this.workerJobEventQueue = workerJobEventQueue;
         this.routing = routing;
+        // by then the liveness coordinator has declared a worker lost, so a running worker no controller holds reveals a routing bug
+        this.maxWorkerUnknownDuration = serverConfig.liveness().timeout().plus(serverConfig.liveness().interval()).multipliedBy(2);
         this.vNodesAssigner = new DefaultVNodesAssigner(channel);
     }
 
@@ -151,21 +158,34 @@ public class StickyJobVNodeSubscriber implements WorkerLifecycleListener {
     private void forward(WorkerJobEvent event) {
         StickyRouting stickyRouting = event.stickyRouting();
         try {
-            Optional<String> routingKey = routing.routingKeyForWorker(stickyRouting.workerId());
-            if (routingKey.isPresent()) {
-                WorkerJobEvent forwarded = event.withStickyRouting(stickyRouting.withVNodeRoutingKey(routingKey.get()));
-                workerJobEventQueue.emit(forwarded.key(), forwarded);
-            } else if (routing.isWorkerLost(stickyRouting.workerId())) {
-                log.warn(
-                    "Dropping the job {}: its worker '{}' is lost, so the liveness coordinator recovers it.",
+            switch (routing.locate(stickyRouting.workerId())) {
+                case WorkerLocation.Held held -> emit(event.withStickyRouting(stickyRouting.workerFound(held.routingKey())));
+                case WorkerLocation.Unknown unknown -> retryOrFail(event);
+                case WorkerLocation.Lost lost -> log.warn(
+                    "Dropping the job {}: its worker '{}' is no longer running, so the liveness coordinator recovers it.",
                     event.job().uid(), stickyRouting.workerId()
                 );
-            } else {
-                workerJobEventQueue.emit(event.key(), event);
             }
         } catch (QueueException e) {
             log.error("Failed to forward the sticky job {}: {}", event.job().uid(), e.getMessage(), e);
         }
+    }
+
+    private void retryOrFail(WorkerJobEvent event) throws QueueException {
+        StickyRouting stickyRouting = event.stickyRouting().workerUnknown(Instant.now());
+        if (stickyRouting.workerUnknownSince().plus(maxWorkerUnknownDuration).isAfter(Instant.now())) {
+            emit(event.withStickyRouting(stickyRouting));
+            return;
+        }
+        log.error(
+            "Failing the job {}: its worker '{}' is running but no controller has held it since {}.",
+            event.job().uid(), stickyRouting.workerId(), stickyRouting.workerUnknownSince()
+        );
+        dispatcher.failSticky(event);
+    }
+
+    private void emit(WorkerJobEvent event) throws QueueException {
+        workerJobEventQueue.emit(event.key(), event);
     }
 
     private void closeQuietly(int vNode, QueueSubscriber<WorkerJobEvent> subscriber) {

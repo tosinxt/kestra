@@ -70,6 +70,21 @@ class StickyWorkerRoutingTest {
         assertThat(event.key()).isEqualTo(StickyWorkerRouting.routingKey(VNodes.computeVNode(16, "worker-2")));
     }
 
+    @Test
+    void shouldLocateAWorkerThatLeftTheRunningStatesAsLostAndARunningOneNoControllerListsAsUnknown() {
+        when(store.findAllInstancesInStates(Service.ServiceState.allRunningStates())).thenReturn(
+            List.of(controller("controller-a", List.of("worker-1"), List.of(0, 1)), worker("worker-2"))
+        );
+
+        assertThat(routing.locate("worker-1")).isInstanceOf(StickyWorkerRouting.WorkerLocation.Held.class);
+        assertThat(routing.locate("worker-2")).isInstanceOf(StickyWorkerRouting.WorkerLocation.Unknown.class);
+        assertThat(routing.locate("disconnected-worker")).isInstanceOf(StickyWorkerRouting.WorkerLocation.Lost.class);
+    }
+
+    private static ServiceInstance worker(String id) {
+        return new ServiceInstance(id, ServiceType.WORKER, Service.ServiceState.RUNNING, null, Instant.now(), Instant.now(), List.of(), null, null, Set.of());
+    }
+
     private static ServiceInstance controller(String id, List<String> workerIds, List<Integer> vNodes) {
         return new ServiceInstance(
             id, ServiceType.CONTROLLER, Service.ServiceState.RUNNING, null, Instant.now(), Instant.now(), List.of(), null,

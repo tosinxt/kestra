@@ -792,18 +792,34 @@ public class WorkerJobDispatcher {
             return StickyDispatchResult.WORKER_NOT_CONNECTED;
         }
 
+        // the job reached the controller holding its worker, so the time spent waiting for a permit is not counted as unknown
+        WorkerJobEvent reached = event.withStickyRouting(event.stickyRouting().workerFound(event.stickyRouting().vNodeRoutingKey()));
         if (!context.tryConsumePermit()) {
-            requeue(event);
+            requeue(reached);
             return StickyDispatchResult.WORKER_BUSY;
         }
         String bucket = context.tryReserveBucket(workerQueueId);
         if (bucket == null) {
             context.addPermits(1);
-            requeue(event);
+            requeue(reached);
             return StickyDispatchResult.WORKER_BUSY;
         }
         dispatchJobToWorker(context, job, event, workerQueueId, bucket);
         return StickyDispatchResult.HANDLED;
+    }
+
+    /**
+     * Fails a sticky job that could not reach its worker, so the task's retry and the flow's error handling apply.
+     */
+    public void failSticky(WorkerJobEvent event) {
+        if (!(event.job() instanceof WorkerTask workerTask)) {
+            return;
+        }
+        try {
+            workerTaskResultQueue.emit(new WorkerTaskResult(workerTask.fail()));
+        } catch (QueueException e) {
+            log.error("Failed to emit the FAILED result of the sticky job '{}': {}", event.job().uid(), e.getMessage(), e);
+        }
     }
 
     /**
