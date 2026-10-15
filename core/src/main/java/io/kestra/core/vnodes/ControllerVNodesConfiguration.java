@@ -13,6 +13,6 @@ import io.micronaut.core.bind.annotation.Bindable;
  */
 @ConfigurationProperties("kestra.controller.vnodes")
 public record ControllerVNodesConfiguration(
-    @Bindable(defaultValue = "16") Integer count,
+    @Bindable(defaultValue = "32") Integer count,
     @Bindable(defaultValue = "PT5S") Duration rebalanceTimeout) {
 }
