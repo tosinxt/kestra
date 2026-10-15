@@ -55,15 +55,19 @@ public class StickyWorkerRouting {
         return new WorkerJobEvent(workerQueueId, job, new WorkerJobEvent.StickyRouting(workerId, routingKey));
     }
 
+    /**
+     * The workers of a controller are spread over its vNodes, so a vNode paused for a busy worker holds back only the
+     * workers sharing it.
+     */
     public Optional<String> routingKeyForWorker(String workerId) {
         return serviceLivenessStore.findAllInstancesInState(Service.ServiceState.RUNNING)
             .stream()
             .filter(instance -> instance.is(ServiceType.CONTROLLER))
             .filter(controller -> prop(controller, WORKERS_PROP).contains(workerId))
-            .flatMap(controller -> prop(controller, VNODES_PROP).stream())
-            .map(vNode -> ((Number) vNode).intValue())
-            .min(Integer::compareTo)
-            .map(StickyWorkerRouting::routingKey);
+            .map(controller -> prop(controller, VNODES_PROP).stream().map(vNode -> ((Number) vNode).intValue()).sorted().toList())
+            .filter(vNodes -> !vNodes.isEmpty())
+            .findFirst()
+            .map(vNodes -> routingKey(vNodes.get(VNodes.computeVNode(vNodes.size(), workerId))));
     }
 
     /**

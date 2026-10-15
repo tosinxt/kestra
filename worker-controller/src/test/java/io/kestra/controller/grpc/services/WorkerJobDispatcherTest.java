@@ -276,7 +276,7 @@ class WorkerJobDispatcherTest {
         WorkerJobEvent event = createJobEvent("job-1", WORKER_GROUP_A)
             .withStickyRouting(new WorkerJobEvent.StickyRouting("worker-1", "__vnode-3"));
 
-        assertThat(dispatcher.dispatchSticky(event)).isTrue();
+        assertThat(dispatcher.dispatchSticky(event)).isEqualTo(WorkerJobDispatcher.StickyDispatchResult.HANDLED);
         assertThat(busy.getInFlightCount()).isEqualTo(2);
         assertThat(idle.getInFlightCount()).isZero();
     }
@@ -289,8 +289,12 @@ class WorkerJobDispatcherTest {
         WorkerJobEvent event = createJobEvent("job-1", WORKER_GROUP_A)
             .withStickyRouting(new WorkerJobEvent.StickyRouting("worker-1", "__vnode-3"));
 
-        assertThat(dispatcher.dispatchSticky(event)).isTrue();
+        assertThat(dispatcher.dispatchSticky(event)).isEqualTo(WorkerJobDispatcher.StickyDispatchResult.WORKER_BUSY);
         verify(mockQueue).emit("__vnode-3", event);
+        assertThat(dispatcher.isWorkerBusy("worker-1", WORKER_GROUP_A)).isTrue();
+
+        worker.addPermits(1);
+        assertThat(dispatcher.isWorkerBusy("worker-1", WORKER_GROUP_A)).isFalse();
     }
 
     @Test
@@ -298,7 +302,7 @@ class WorkerJobDispatcherTest {
         WorkerJobEvent event = createJobEvent("job-1", WORKER_GROUP_A)
             .withStickyRouting(new WorkerJobEvent.StickyRouting("worker-unknown", "__vnode-3"));
 
-        assertThat(dispatcher.dispatchSticky(event)).isFalse();
+        assertThat(dispatcher.dispatchSticky(event)).isEqualTo(WorkerJobDispatcher.StickyDispatchResult.WORKER_NOT_CONNECTED);
     }
 
     @Nested

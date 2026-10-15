@@ -5,6 +5,9 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 
@@ -38,7 +41,22 @@ class StickyWorkerRoutingTest {
         WorkerJobEvent event = routing.route(mock(WorkerJob.class), null, "worker-2");
 
         assertThat(event.stickyRouting().workerId()).isEqualTo("worker-2");
-        assertThat(event.key()).isEqualTo(StickyWorkerRouting.routingKey(3));
+        assertThat(event.key()).isEqualTo(StickyWorkerRouting.routingKey(List.of(3, 7).get(VNodes.computeVNode(2, "worker-2"))));
+    }
+
+    @Test
+    void shouldSpreadTheWorkersOfAControllerOverItsVNodes() {
+        List<String> workerIds = IntStream.range(0, 20).mapToObj(i -> "worker-" + i).toList();
+        when(store.findAllInstancesInState(Service.ServiceState.RUNNING)).thenReturn(
+            List.of(controller("controller-a", workerIds, List.of(0, 5, 9, 12)))
+        );
+
+        Set<String> keys = workerIds.stream()
+            .map(workerId -> routing.route(mock(WorkerJob.class), null, workerId).key())
+            .collect(Collectors.toSet());
+
+        assertThat(keys).hasSizeGreaterThan(1)
+            .isSubsetOf(Stream.of(0, 5, 9, 12).map(StickyWorkerRouting::routingKey).toList());
     }
 
     @Test

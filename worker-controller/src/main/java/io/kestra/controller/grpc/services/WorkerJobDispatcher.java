@@ -667,6 +667,7 @@ public class WorkerJobDispatcher {
 
         log.trace("Permits received: worker {}, permits={}", context.getWorkerId(), newPermits);
         reEvaluateSubscriptions(context);
+        fireWorkerCapacityChanged(context);
     }
 
     /**
@@ -689,6 +690,7 @@ public class WorkerJobDispatcher {
             return;
         }
         reEvaluateSubscriptions(context);
+        fireWorkerCapacityChanged(context);
     }
 
     /**
@@ -775,34 +777,42 @@ public class WorkerJobDispatcher {
     /**
      * Dispatches a sticky job to its worker, bypassing the Worker Queue's load balancing.
      * <p>
-     * A job for a connected worker with no free permit is re-queued on the same vNode.
-     *
-     * @return {@code false} when the target worker is not connected to this controller, so the caller must forward it.
+     * A job for a connected worker with no free permit is re-queued once on the same vNode, and the caller must stop
+     * consuming that vNode until {@link #isWorkerBusy} turns false.
      */
-    public boolean dispatchSticky(WorkerJobEvent event) {
+    public StickyDispatchResult dispatchSticky(WorkerJobEvent event) {
         String workerQueueId = event.workerQueueId() == null ? "" : event.workerQueueId();
         WorkerJob job = event.job();
         if (skipIfKilled(job, workerQueueId)) {
-            return true;
+            return StickyDispatchResult.HANDLED;
         }
 
         WorkerStreamContext<WorkerJobResponse> context = activeStreams.get(event.stickyRouting().workerId());
         if (context == null) {
-            return false;
+            return StickyDispatchResult.WORKER_NOT_CONNECTED;
         }
 
         if (!context.tryConsumePermit()) {
             requeue(event);
-            return true;
+            return StickyDispatchResult.WORKER_BUSY;
         }
         String bucket = context.tryReserveBucket(workerQueueId);
         if (bucket == null) {
             context.addPermits(1);
             requeue(event);
-            return true;
+            return StickyDispatchResult.WORKER_BUSY;
         }
         dispatchJobToWorker(context, job, event, workerQueueId, bucket);
-        return true;
+        return StickyDispatchResult.HANDLED;
+    }
+
+    /**
+     * @return {@code true} when the worker is connected to this controller but cannot take a job of the given Worker Queue.
+     */
+    public boolean isWorkerBusy(String workerId, @Nullable String workerQueueId) {
+        WorkerStreamContext<WorkerJobResponse> context = activeStreams.get(workerId);
+        return context != null
+            && (context.getAvailablePermits() <= 0 || !context.hasCapacityForQueue(workerQueueId == null ? "" : workerQueueId));
     }
 
     /**
@@ -1423,6 +1433,12 @@ public class WorkerJobDispatcher {
         }
     }
 
+    private void fireWorkerCapacityChanged(WorkerStreamContext<WorkerJobResponse> context) {
+        for (WorkerLifecycleListener l : lifecycleListeners) {
+            safelyInvoke(() -> l.onWorkerCapacityChanged(context), "onWorkerCapacityChanged");
+        }
+    }
+
     private void fireWorkerSubscriptionsChanged(
         WorkerStreamContext<WorkerJobResponse> context,
         Set<String> added,
@@ -1446,6 +1462,12 @@ public class WorkerJobDispatcher {
     /**
      * Holds the state for a Worker Queue: the queue subscription and the synchronization lock.
      */
+    public enum StickyDispatchResult {
+        HANDLED,
+        WORKER_BUSY,
+        WORKER_NOT_CONNECTED
+    }
+
     private record WorkerQueueState(
         QueueSubscriber<WorkerJobEvent> subscriber,
         AtomicBoolean isPaused,

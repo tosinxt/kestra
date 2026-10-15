@@ -38,6 +38,7 @@ public class StickyJobVNodeSubscriber implements WorkerLifecycleListener {
     private final StickyWorkerRouting routing;
     private final DefaultVNodesAssigner vNodesAssigner;
     private final Map<Integer, QueueSubscriber<WorkerJobEvent>> subscribers = new ConcurrentHashMap<>();
+    private final Map<Integer, BusyWorker> pausedVNodes = new ConcurrentHashMap<>();
 
     private volatile WorkerJobDispatcher dispatcher;
     private volatile Disposable assignment;
@@ -65,6 +66,7 @@ public class StickyJobVNodeSubscriber implements WorkerLifecycleListener {
             @Override
             public void onVNodesRevoked() {
                 subscribers.keySet().stream().toList().forEach(vNode -> closeQuietly(vNode, subscribers.remove(vNode)));
+                pausedVNodes.clear();
             }
 
             @Override
@@ -72,6 +74,16 @@ public class StickyJobVNodeSubscriber implements WorkerLifecycleListener {
                 vNodes.forEach(vNode -> subscribers.computeIfAbsent(vNode, StickyJobVNodeSubscriber.this::subscribe));
             }
         });
+    }
+
+    @Override
+    public void onWorkerCapacityChanged(WorkerStreamContext<?> context) {
+        resumeVNodesWaitingFor(context.getWorkerId());
+    }
+
+    @Override
+    public void onWorkerUnregistered(WorkerStreamContext<?> context) {
+        resumeVNodesWaitingFor(context.getWorkerId());
     }
 
     /**
@@ -83,19 +95,56 @@ public class StickyJobVNodeSubscriber implements WorkerLifecycleListener {
 
     private QueueSubscriber<WorkerJobEvent> subscribe(int vNode) {
         QueueSubscriber<WorkerJobEvent> subscriber = workerJobEventQueue.subscriber(StickyWorkerRouting.routingKey(vNode));
-        subscriber.subscribe(this::handle);
+        subscriber.subscribe(either -> handle(vNode, either));
         log.info("Subscribed to vNode {} for sticky jobs", vNode);
         return subscriber;
     }
 
-    private void handle(Either<WorkerJobEvent, DeserializationException> either) {
+    private void handle(int vNode, Either<WorkerJobEvent, DeserializationException> either) {
         if (either.isRight()) {
             log.error("Deserialization error for a sticky job: {}", either.getRight().getMessage());
             return;
         }
         WorkerJobEvent event = either.getLeft();
-        if (!dispatcher.dispatchSticky(event)) {
-            forward(event);
+        switch (dispatcher.dispatchSticky(event)) {
+            case WORKER_BUSY -> pause(vNode, new BusyWorker(event.stickyRouting().workerId(), event.workerQueueId()));
+            case WORKER_NOT_CONNECTED -> forward(event);
+            case HANDLED -> {
+            }
+        }
+    }
+
+    private void pause(int vNode, BusyWorker busyWorker) {
+        QueueSubscriber<WorkerJobEvent> subscriber = subscribers.get(vNode);
+        if (subscriber == null) {
+            return;
+        }
+        // paused before being recorded, so a resume can never run before the pause it undoes
+        subscriber.pause();
+        pausedVNodes.put(vNode, busyWorker);
+        log.debug("Paused vNode {} until worker '{}' has a free permit", vNode, busyWorker.workerId());
+        // the permit may have been freed before the vNode was recorded, and then no other notification comes
+        resumeIfFree(vNode);
+    }
+
+    private void resumeVNodesWaitingFor(String workerId) {
+        pausedVNodes.forEach((vNode, busyWorker) ->
+        {
+            if (busyWorker.workerId().equals(workerId)) {
+                resumeIfFree(vNode);
+            }
+        });
+    }
+
+    private void resumeIfFree(int vNode) {
+        BusyWorker busyWorker = pausedVNodes.get(vNode);
+        if (busyWorker == null || dispatcher.isWorkerBusy(busyWorker.workerId(), busyWorker.workerQueueId()) || !pausedVNodes.remove(vNode, busyWorker)) {
+            return;
+        }
+        QueueSubscriber<WorkerJobEvent> subscriber = subscribers.get(vNode);
+        if (subscriber != null) {
+            subscriber.resume();
+            log.debug("Resumed vNode {}", vNode);
         }
     }
 
@@ -136,5 +185,9 @@ public class StickyJobVNodeSubscriber implements WorkerLifecycleListener {
         vNodesAssigner.stop();
         subscribers.forEach(this::closeQuietly);
         subscribers.clear();
+        pausedVNodes.clear();
+    }
+
+    private record BusyWorker(String workerId, String workerQueueId) {
     }
 }
